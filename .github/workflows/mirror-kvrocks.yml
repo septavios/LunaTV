@@ -1,0 +1,56 @@
+name: Mirror Kvrocks Image
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Source tag from apache/kvrocks to mirror'
+        required: true
+        default: '2.14.0'
+        type: string
+      push_latest:
+        description: 'Also push ghcr latest tag'
+        required: false
+        default: 'true'
+        type: boolean
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  mirror:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set lowercase owner
+        id: lowercase
+        run: echo "owner=$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
+
+      - name: Install skopeo
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y skopeo
+
+      - name: Login to GHCR
+        env:
+          CR_USER: ${{ github.actor }}
+          CR_PAT: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "$CR_PAT" | skopeo login ghcr.io -u "$CR_USER" --password-stdin
+
+      - name: Mirror apache/kvrocks:${{ inputs.tag }} to ghcr.io/${{ steps.lowercase.outputs.owner }}/kvrocks:${{ inputs.tag }}
+        run: |
+          skopeo copy --all \
+            docker://apache/kvrocks:${{ inputs.tag }} \
+            docker://ghcr.io/${{ steps.lowercase.outputs.owner }}/kvrocks:${{ inputs.tag }}
+
+      - name: Also push latest tag (optional)
+        if: ${{ inputs.push_latest == 'true' }}
+        run: |
+          skopeo copy --all \
+            docker://apache/kvrocks:${{ inputs.tag }} \
+            docker://ghcr.io/${{ steps.lowercase.outputs.owner }}/kvrocks:latest
+
