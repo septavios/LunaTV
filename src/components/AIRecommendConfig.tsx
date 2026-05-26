@@ -15,6 +15,7 @@ interface AIRecommendConfigProps {
 const AIRecommendConfig = ({ config, refreshConfig }: AIRecommendConfigProps) => {
   const [isLoading, setIsLoading] = useState(false);
   const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+  const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
 
   const [aiSettings, setAiSettings] = useState({
     enabled: false,
@@ -44,6 +45,7 @@ const AIRecommendConfig = ({ config, refreshConfig }: AIRecommendConfigProps) =>
       planLimit: number;
       currentPlan: string;
       error?: string;
+      wafBlocked?: boolean;
     }> | null;
     lastUpdated: string | null;
   }>({
@@ -152,6 +154,7 @@ const AIRecommendConfig = ({ config, refreshConfig }: AIRecommendConfigProps) =>
       }
 
       showMessage('success', 'AI推荐配置保存成功');
+      setHasUnsavedChanges(false);
       await refreshConfig();
     } catch (err) {
       showMessage('error', err instanceof Error ? err.message : '保存失败');
@@ -214,14 +217,22 @@ const AIRecommendConfig = ({ config, refreshConfig }: AIRecommendConfigProps) =>
 
   // 获取 Tavily API 用量
   const fetchTavilyUsage = async (singleKeyIndex?: number) => {
+    // 先保存输入到 state（如果用户刚输入还没失焦）
+    const keys = tavilyKeysInput
+      .split(/[,\n]+/)
+      .map(k => k.trim())
+      .filter(k => k.length > 0);
+
+    setAiSettings(prev => ({ ...prev, tavilyApiKeys: keys }));
+
     let keysToCheck: string[];
 
     if (singleKeyIndex !== undefined) {
       // 查询单个 Key
-      keysToCheck = [aiSettings.tavilyApiKeys[singleKeyIndex]];
+      keysToCheck = [keys[singleKeyIndex]];
     } else {
       // 查询所有 Key
-      keysToCheck = aiSettings.tavilyApiKeys.filter(k => k.trim().length > 0);
+      keysToCheck = keys.filter(k => k.trim().length > 0);
     }
 
     if (keysToCheck.length === 0) {
@@ -232,47 +243,27 @@ const AIRecommendConfig = ({ config, refreshConfig }: AIRecommendConfigProps) =>
     setTavilyUsage(prev => ({ ...prev, loading: true }));
 
     try {
-      const results = await Promise.all(
-        keysToCheck.map(async (key, idx) => {
-          try {
-            const response = await fetch('https://api.tavily.com/usage', {
-              method: 'GET',
-              headers: {
-                'Authorization': `Bearer ${key}`,
-                'Content-Type': 'application/json'
-              }
-            });
+      // 通过后端 API 代理查询，避免浏览器 CORS 和 WAF 问题
+      const response = await fetch('/api/admin/ai-recommend/usage', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ apiKeys: keysToCheck })
+      });
 
-            if (!response.ok) {
-              throw new Error(`HTTP ${response.status}`);
-            }
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.error || '查询失败');
+      }
 
-            const data = await response.json();
-            return {
-              key: key.substring(0, 12) + '...',
-              fullKey: key,
-              index: singleKeyIndex !== undefined ? singleKeyIndex : idx,
-              keyUsage: data.key?.usage || 0,
-              keyLimit: data.key?.limit || 1000,
-              planUsage: data.account?.plan_usage || 0,
-              planLimit: data.account?.plan_limit || 1000,
-              currentPlan: data.account?.current_plan || 'Free'
-            };
-          } catch (err) {
-            return {
-              key: key.substring(0, 12) + '...',
-              fullKey: key,
-              index: singleKeyIndex !== undefined ? singleKeyIndex : idx,
-              keyUsage: 0,
-              keyLimit: 0,
-              planUsage: 0,
-              planLimit: 0,
-              currentPlan: 'Error',
-              error: err instanceof Error ? err.message : '获取失败'
-            };
-          }
-        })
-      );
+      const { results } = await response.json();
+
+      // 将结果映射回正确的索引
+      const mappedResults = results.map((result: any, idx: number) => ({
+        ...result,
+        index: singleKeyIndex !== undefined ? singleKeyIndex : idx
+      }));
 
       if (singleKeyIndex !== undefined) {
         // 单个查询：更新或添加该 Key 的数据
@@ -282,9 +273,9 @@ const AIRecommendConfig = ({ config, refreshConfig }: AIRecommendConfigProps) =>
           const existingIndex = newData.findIndex(d => d.index === singleKeyIndex);
 
           if (existingIndex >= 0) {
-            newData[existingIndex] = results[0];
+            newData[existingIndex] = mappedResults[0];
           } else {
-            newData.push(results[0]);
+            newData.push(mappedResults[0]);
           }
 
           return {
@@ -293,17 +284,19 @@ const AIRecommendConfig = ({ config, refreshConfig }: AIRecommendConfigProps) =>
             lastUpdated: new Date().toLocaleString('zh-CN')
           };
         });
+        showMessage('success', '✅ 统计数据已更新！请点击下方"保存配置"按钮保存Key到配置文件');
       } else {
         // 全部查询：替换所有数据
         setTavilyUsage({
           loading: false,
-          data: results,
+          data: mappedResults,
           lastUpdated: new Date().toLocaleString('zh-CN')
         });
+        showMessage('success', '✅ 统计数据已更新！请点击下方"保存配置"按钮保存Key到配置文件');
       }
     } catch (err) {
       console.error('获取 Tavily 用量失败:', err);
-      showMessage('error', '获取用量失败，请稍后重试');
+      showMessage('error', err instanceof Error ? err.message : '获取用量失败，请稍后重试');
       setTavilyUsage(prev => ({ ...prev, loading: false }));
     }
   };
@@ -635,6 +628,7 @@ const AIRecommendConfig = ({ config, refreshConfig }: AIRecommendConfigProps) =>
                     onChange={(e) => {
                       // 直接保存原始输入，不做分割
                       setTavilyKeysInput(e.target.value);
+                      setHasUnsavedChanges(true);
                     }}
                     onBlur={() => {
                       // 失焦时分割并更新到settings（用于显示数量）
@@ -756,6 +750,35 @@ const AIRecommendConfig = ({ config, refreshConfig }: AIRecommendConfigProps) =>
                                   </svg>
                                   点击"查询"按钮获取用量信息
                                 </div>
+                              ) : usage.wafBlocked ? (
+                                <div className='space-y-2'>
+                                  <div className='text-xs bg-orange-50 dark:bg-orange-900/20 px-3 py-2 rounded-lg border border-orange-200 dark:border-orange-800'>
+                                    <div className='flex items-start gap-2 text-orange-700 dark:text-orange-300'>
+                                      <svg className='h-4 w-4 flex-shrink-0 mt-0.5' fill='currentColor' viewBox='0 0 20 20'>
+                                        <path fillRule='evenodd' d='M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z' clipRule='evenodd' />
+                                      </svg>
+                                      <div className='flex-1'>
+                                        <p className='font-semibold mb-1'>⚠️ Tavily Usage API 暂时不可用</p>
+                                        <p className='mb-2'>Tavily 的用量查询接口被 AWS WAF 拦截（HTTP 202 Challenge），这是 Tavily 服务端的配置问题。</p>
+                                        <p className='mb-2'>
+                                          <strong>临时解决方案：</strong>请访问
+                                          <a
+                                            href='https://app.tavily.com'
+                                            target='_blank'
+                                            rel='noopener noreferrer'
+                                            className='underline hover:text-orange-800 dark:hover:text-orange-200 ml-1 font-semibold'
+                                          >
+                                            Tavily 官网控制台
+                                          </a>
+                                          {' '}查看 API 用量
+                                        </p>
+                                        <p className='text-xs text-orange-600 dark:text-orange-400'>
+                                          💡 提示：搜索功能正常工作，只是用量查询接口有问题。我们会持续关注 Tavily 的修复进度。
+                                        </p>
+                                      </div>
+                                    </div>
+                                  </div>
+                                </div>
                               ) : usage.error ? (
                                 <div className='text-xs text-red-600 dark:text-red-400 flex items-center gap-1'>
                                   <svg className='h-3.5 w-3.5' fill='currentColor' viewBox='0 0 20 20'>
@@ -854,12 +877,16 @@ const AIRecommendConfig = ({ config, refreshConfig }: AIRecommendConfigProps) =>
         <button
           onClick={handleSave}
           disabled={isLoading}
-          className='flex items-center px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-gray-400 disabled:cursor-not-allowed text-white rounded-lg font-medium transition-colors'
+          className={`flex items-center px-4 py-2 ${
+            hasUnsavedChanges
+              ? 'bg-orange-600 hover:bg-orange-700 animate-pulse'
+              : 'bg-blue-600 hover:bg-blue-700'
+          } disabled:bg-gray-400 disabled:cursor-not-allowed text-white rounded-lg font-medium transition-colors`}
         >
           <svg className='h-4 w-4 mr-2' fill='none' stroke='currentColor' viewBox='0 0 24 24'>
             <path strokeLinecap='round' strokeLinejoin='round' strokeWidth={2} d='M5 13l4 4L19 7' />
           </svg>
-          {isLoading ? '保存中...' : '保存配置'}
+          {isLoading ? '保存中...' : hasUnsavedChanges ? '⚠️ 保存配置（有未保存更改）' : '保存配置'}
         </button>
       </div>
     </div>

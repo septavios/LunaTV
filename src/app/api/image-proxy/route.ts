@@ -1,6 +1,38 @@
 import { NextResponse } from 'next/server';
+import { DEFAULT_USER_AGENT } from '@/lib/user-agent';
+import { validateProxyTargetUrl } from '@/lib/proxy-security';
+import * as https from 'https';
 
 export const runtime = 'nodejs';
+
+// https agent with rejectUnauthorized: false for expired-cert image CDNs
+const insecureHttpsAgent = new https.Agent({ rejectUnauthorized: false });
+
+async function fetchWithInsecureHttps(imageUrl: string, fetchHeaders: HeadersInit): Promise<Response> {
+  return new Promise((resolve, reject) => {
+    const urlObj = new URL(imageUrl);
+    const options = {
+      hostname: urlObj.hostname,
+      path: urlObj.pathname + urlObj.search,
+      method: 'GET',
+      agent: insecureHttpsAgent,
+      headers: fetchHeaders as Record<string, string>,
+    };
+    const req = https.request(options, (res) => {
+      const chunks: Buffer[] = [];
+      res.on('data', (chunk) => chunks.push(chunk));
+      res.on('end', () => {
+        const body = Buffer.concat(chunks);
+        resolve(new Response(body, {
+          status: res.statusCode ?? 200,
+          headers: res.headers as Record<string, string>,
+        }));
+      });
+    });
+    req.on('error', reject);
+    req.end();
+  });
+}
 
 // 图片代理接口 - 解决防盗链和 Mixed Content 问题
 export async function GET(request: Request) {
@@ -11,11 +43,15 @@ export async function GET(request: Request) {
     return NextResponse.json({ error: 'Missing image URL' }, { status: 400 });
   }
 
-  // URL 格式验证
+  // SSRF 防护：验证目标 URL
   try {
-    new URL(imageUrl);
-  } catch {
-    return NextResponse.json({ error: 'Invalid URL format' }, { status: 400 });
+    await validateProxyTargetUrl(imageUrl);
+  } catch (error) {
+    console.error('[Image Proxy] SSRF validation failed:', error);
+    return NextResponse.json(
+      { error: 'Invalid or blocked URL' },
+      { status: 403 }
+    );
   }
 
   // 创建 AbortController 用于超时控制
@@ -31,18 +67,27 @@ export async function GET(request: Request) {
     const fetchHeaders: HeadersInit = {
       'Referer': sourceOrigin + '/',
       'Origin': sourceOrigin,
-      'User-Agent':
-        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36',
+      'User-Agent': DEFAULT_USER_AGENT,
       'Accept': 'image/avif,image/webp,image/jxl,image/apng,image/svg+xml,image/*,*/*;q=0.8',
       'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
       'Accept-Encoding': 'gzip, deflate, br',
       'Connection': 'keep-alive',
     };
 
-    const imageResponse = await fetch(imageUrl, {
-      signal: controller.signal,
-      headers: fetchHeaders,
-    });
+    let imageResponse: Response;
+    try {
+      imageResponse = await fetch(imageUrl, {
+        signal: controller.signal,
+        headers: fetchHeaders,
+      });
+    } catch (fetchError: any) {
+      // SSL cert error (e.g. expired cert) - retry with rejectUnauthorized: false
+      if (imageUrl.startsWith('https://') && (fetchError.code === 'CERT_HAS_EXPIRED' || fetchError.cause?.code === 'CERT_HAS_EXPIRED' || fetchError.message?.includes('certificate'))) {
+        imageResponse = await fetchWithInsecureHttps(imageUrl, fetchHeaders);
+      } else {
+        throw fetchError;
+      }
+    }
 
     clearTimeout(timeoutId);
 
@@ -73,6 +118,12 @@ export async function GET(request: Request) {
     const headers = new Headers();
     if (contentType) {
       headers.set('Content-Type', contentType);
+    }
+
+    // 传递Content-Length以支持进度显示和更好的缓存（如果上游提供）
+    const contentLength = imageResponse.headers.get('content-length');
+    if (contentLength) {
+      headers.set('Content-Length', contentLength);
     }
 
     // 设置缓存头 - 缓存7天（604800秒），允许重新验证

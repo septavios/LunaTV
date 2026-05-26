@@ -12,13 +12,15 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 import { getConfig } from '@/lib/config';
+import { DEFAULT_USER_AGENT } from '@/lib/user-agent';
+import { validateProxyTargetUrl } from '@/lib/proxy-security';
 
 // 使用 Node.js Runtime 以获得更好的网络兼容性
 export const runtime = 'nodejs';
 
 // 完整的浏览器请求头伪装
 const BROWSER_HEADERS = {
-  'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+  'User-Agent': DEFAULT_USER_AGENT,
   'Accept': 'application/json, text/javascript, */*; q=0.01',
   'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
   'Accept-Encoding': 'gzip, deflate',
@@ -103,16 +105,20 @@ export async function GET(request: NextRequest) {
       );
     }
 
-    // URL 格式验证
-    let parsedUrl: URL;
+    // SSRF 防护：验证目标 URL（同时也验证了 URL 格式）
+    let validatedUrl: string;
     try {
-      parsedUrl = new URL(targetUrl);
-    } catch {
+      validatedUrl = await validateProxyTargetUrl(targetUrl);
+    } catch (error) {
+      console.error('[CMS Proxy] SSRF validation failed:', error);
       return NextResponse.json(
-        { error: 'Invalid URL format' },
-        { status: 400, headers: getCorsHeaders() }
+        { error: 'Invalid or blocked URL' },
+        { status: 403, headers: getCorsHeaders() }
       );
     }
+
+    // 解析 URL 用于后续检查
+    const parsedUrl = new URL(validatedUrl);
 
     // 白名单检查
     if (!isUrlAllowed(targetUrl)) {
@@ -178,9 +184,14 @@ export async function GET(request: NextRequest) {
     try {
       console.log(`[CMS Proxy] Fetching: ${targetUrl}`);
 
+      // 设置 Referer/Origin 为目标站点的 origin（某些 CMS 会校验）
+      const requestHeaders: Record<string, string> = { ...BROWSER_HEADERS };
+      requestHeaders['Referer'] = `${parsedUrl.origin}/`;
+      requestHeaders['Origin'] = parsedUrl.origin;
+
       const response = await fetch(targetUrl, {
         method: 'GET',
-        headers: BROWSER_HEADERS,
+        headers: requestHeaders,
         signal: controller.signal,
         // @ts-ignore - Node.js fetch 特有选项
         compress: true, // 启用压缩

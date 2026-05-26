@@ -2,12 +2,12 @@
 'use client';
 
 import { useState, useEffect, useRef } from 'react';
-import { MessageCircle, X, Send, Smile, Info, Users, LogOut, Mic, MicOff, Volume2, VolumeX, Play } from 'lucide-react';
+import { MessageCircle, X, Send, Smile, Info, Users, LogOut, Mic, MicOff, Volume2, VolumeX, Play, Monitor, Radio } from 'lucide-react';
 import { useRouter } from 'next/navigation';
 import { useWatchRoomContextSafe } from '@/components/WatchRoomProvider';
 import { useVoiceChat } from '@/hooks/useVoiceChat';
 import MiniVideoCard from '@/components/watch-room/MiniVideoCard';
-import type { PlayState } from '@/types/watch-room.types';
+import type { PlayState, LiveState, ScreenState } from '@/types/watch-room.types';
 
 const EMOJI_LIST = ['😀', '😂', '😍', '🥰', '😎', '🤔', '👍', '👏', '🎉', '❤️', '🔥', '⭐'];
 
@@ -240,6 +240,64 @@ export default function ChatFloatingWindow() {
             </div>
           )}
 
+          {/* 正在观看的直播 */}
+          {currentRoom.currentState && currentRoom.currentState.type === 'live' && (
+            <div>
+              <p className="text-xs sm:text-sm text-gray-500 dark:text-gray-400 mb-2 flex items-center gap-1">
+                <Radio className="h-3.5 w-3.5 sm:h-4 sm:w-4 text-red-500" />
+                正在观看直播
+              </p>
+              <div
+                className="bg-gray-50 dark:bg-gray-700 rounded-lg p-3 cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-600 transition-colors"
+                onClick={() => {
+                  const state = currentRoom.currentState as LiveState;
+                  router.push(`/live?id=${state.channelId}&source=${state.channelUrl}`);
+                  setShowRoomInfo(false);
+                }}
+              >
+                <div className="flex items-center gap-2">
+                  <div className="w-10 h-10 bg-red-100 dark:bg-red-900/30 rounded-lg flex items-center justify-center shrink-0">
+                    <Radio className="w-5 h-5 text-red-500" />
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <h5 className="font-medium text-gray-900 dark:text-gray-100 text-sm truncate">
+                      {(currentRoom.currentState as LiveState).channelName}
+                    </h5>
+                    <p className="text-xs text-gray-500 dark:text-gray-400">
+                      点击加入观看
+                    </p>
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* 屏幕共享状态 */}
+          {currentRoom.currentState && currentRoom.currentState.type === 'screen' && (
+            <div>
+              <p className="text-xs sm:text-sm text-gray-500 dark:text-gray-400 mb-2 flex items-center gap-1">
+                <Monitor className="h-3.5 w-3.5 sm:h-4 sm:w-4 text-blue-500" />
+                屏幕共享中
+              </p>
+              <div className="bg-gray-50 dark:bg-gray-700 rounded-lg p-3">
+                <div className="flex items-center gap-2">
+                  <div className="w-10 h-10 bg-blue-100 dark:bg-blue-900/30 rounded-lg flex items-center justify-center shrink-0">
+                    <Monitor className="w-5 h-5 text-blue-500" />
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <h5 className="font-medium text-gray-900 dark:text-gray-100 text-sm truncate">
+                      {(currentRoom.currentState as ScreenState).ownerName} 的屏幕
+                    </h5>
+                    <p className="text-xs text-gray-500 dark:text-gray-400">
+                      {(currentRoom.currentState as ScreenState).status === 'sharing' ? '正在共享' : '空闲'}
+                      {(currentRoom.currentState as ScreenState).hasAudio && ' • 包含音频'}
+                    </p>
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+
           <div>
             <p className="text-xs sm:text-sm text-gray-500 dark:text-gray-400 mb-2 flex items-center gap-1">
               <Users className="h-3.5 w-3.5 sm:h-4 sm:w-4" />
@@ -373,7 +431,7 @@ export default function ChatFloatingWindow() {
             onChange={(e) => setMessage(e.target.value)}
             onKeyDown={handleKeyDown}
             placeholder="输入消息..."
-            className="flex-1 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 px-2.5 py-1.5 sm:px-3 sm:py-2 text-sm sm:text-base text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-green-500"
+            className="flex-1 min-w-0 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 px-2.5 py-1.5 sm:px-3 sm:py-2 text-sm sm:text-base text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-green-500"
           />
           <button
             onClick={handleSendMessage}

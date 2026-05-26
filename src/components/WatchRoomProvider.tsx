@@ -5,7 +5,7 @@
 import React, { createContext, useContext, useEffect, useState, useCallback, useMemo } from 'react';
 import { useWatchRoom } from '@/hooks/useWatchRoom';
 import { getAuthInfoFromBrowserCookie } from '@/lib/auth';
-import type { Room, Member, ChatMessage } from '@/types/watch-room.types';
+import type { Room, Member, ChatMessage, LiveState, ScreenState, RoomType } from '@/types/watch-room.types';
 
 export interface WatchRoomContextType {
   socket: any | null;
@@ -23,6 +23,7 @@ export interface WatchRoomContextType {
     description: string;
     password?: string;
     isPublic: boolean;
+    roomType?: RoomType;
   }) => Promise<Room>;
   joinRoom: (data: {
     roomId: string;
@@ -30,6 +31,8 @@ export interface WatchRoomContextType {
   }) => Promise<{ room: Room; members: Member[] }>;
   leaveRoom: () => void;
   getRoomList: () => Promise<Room[]>;
+  hasOwnerToken: (roomId: string) => boolean;
+  dismissRoomFromList: (roomId: string) => Promise<{ success: boolean; error?: string }>;
 
   // 聊天
   sendChatMessage: (content: string, type?: 'text' | 'emoji') => void;
@@ -41,6 +44,13 @@ export interface WatchRoomContextType {
   pause: () => void;
   changeVideo: (state: any) => void;
   clearRoomState: () => void;
+
+  // 直播控制
+  changeLiveChannel: (state: LiveState) => void;
+
+  // 屏幕共享控制
+  startScreenShare: (state: ScreenState) => void;
+  stopScreenShare: () => void;
 }
 
 const WatchRoomContext = createContext<WatchRoomContextType | null>(null);
@@ -217,12 +227,17 @@ export function WatchRoomProvider({ children }: WatchRoomProviderProps) {
     },
     leaveRoom: watchRoom.leaveRoom,
     getRoomList: watchRoom.getRoomList,
+    hasOwnerToken: watchRoom.hasOwnerToken,
+    dismissRoomFromList: watchRoom.dismissRoomFromList,
     sendChatMessage: watchRoom.sendMessage,
     updatePlayState: watchRoom.updatePlayState,
     seekPlayback: watchRoom.seekTo,
     play: watchRoom.play,
     pause: watchRoom.pause,
     changeVideo: watchRoom.changeVideo,
+    changeLiveChannel: watchRoom.changeLiveChannel,
+    startScreenShare: watchRoom.startScreenShare,
+    stopScreenShare: watchRoom.stopScreenShare,
     clearRoomState: async () => {
       const result = await watchRoom.clearState();
       if (!result.success) {

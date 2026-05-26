@@ -3,19 +3,27 @@
 import type { Metadata, Viewport } from 'next';
 import { Inter } from 'next/font/google';
 import { cookies } from 'next/headers';
+import { Suspense } from 'react';
+import { Toaster } from 'sonner';
 
 import './globals.css';
 
 import { getConfig } from '@/lib/config';
 
 import { GlobalErrorIndicator } from '../components/GlobalErrorIndicator';
+import { ChunkErrorGuard } from '../components/ChunkErrorGuard';
+import NavigationShell from '../components/NavigationShell';
 import { SessionTracker } from '../components/SessionTracker';
 import { SiteProvider } from '../components/SiteProvider';
 import { ThemeProvider } from '../components/ThemeProvider';
 import { WatchRoomProvider } from '../components/WatchRoomProvider';
 import { DownloadProvider } from '../contexts/DownloadContext';
+import { GlobalCacheProvider } from '../contexts/GlobalCacheContext';
 import { DownloadPanel } from '../components/download/DownloadPanel';
 import ChatFloatingWindow from '../components/watch-room/ChatFloatingWindow';
+import QueryProvider from '../components/QueryProvider';
+import { CinematicLoadingFallback } from '../components/CinematicLoadingFallback';
+import RouteWarmup from '../components/RouteWarmup';
 
 const inter = Inter({ subsets: ['latin'] });
 export const dynamic = 'force-dynamic';
@@ -66,6 +74,10 @@ export default async function RootLayout({
   let disableYellowFilter =
     process.env.NEXT_PUBLIC_DISABLE_YELLOW_FILTER === 'true';
   let fluidSearch = process.env.NEXT_PUBLIC_FLUID_SEARCH !== 'false';
+  let enableWebLive = false;
+  let customAdFilterVersion = 0;
+  let aiRecommendEnabled = false;
+  let embyEnabled = false;
   let customCategories = [] as {
     name: string;
     type: 'movie' | 'tv';
@@ -89,6 +101,15 @@ export default async function RootLayout({
       query: category.query,
     }));
     fluidSearch = config.SiteConfig.FluidSearch;
+    enableWebLive = config.SiteConfig.EnableWebLive ?? false;
+    customAdFilterVersion = config.SiteConfig?.CustomAdFilterVersion || 0;
+    aiRecommendEnabled = config.AIRecommendConfig?.enabled ?? false;
+    // 检查是否启用了 Emby 功能（支持多源）
+    embyEnabled = !!(
+      config.EmbyConfig?.Sources &&
+      config.EmbyConfig.Sources.length > 0 &&
+      config.EmbyConfig.Sources.some(s => s.enabled && s.ServerURL)
+    );
   }
 
   // 将运行时配置注入到全局 window 对象，供客户端在运行时读取
@@ -101,15 +122,24 @@ export default async function RootLayout({
     DISABLE_YELLOW_FILTER: disableYellowFilter,
     CUSTOM_CATEGORIES: customCategories,
     FLUID_SEARCH: fluidSearch,
+    ENABLE_WEB_LIVE: enableWebLive,
+    CUSTOM_AD_FILTER_VERSION: customAdFilterVersion,
+    AI_RECOMMEND_ENABLED: aiRecommendEnabled,
+    EMBY_ENABLED: embyEnabled,
+    PRIVATE_LIBRARY_ENABLED: embyEnabled,
+    // 禁用预告片：Vercel 自动检测，或用户手动设置 DISABLE_HERO_TRAILER=true
+    DISABLE_HERO_TRAILER: process.env.VERCEL === '1' || process.env.DISABLE_HERO_TRAILER === 'true',
   };
 
   return (
-    <html lang='zh-CN' suppressHydrationWarning>
+    <html lang='zh-CN' translate='no' suppressHydrationWarning>
       <head>
         <meta
           name='viewport'
           content='width=device-width, initial-scale=1.0, viewport-fit=cover'
         />
+        <meta name='color-scheme' content='light dark' />
+        <meta name='google' content='notranslate' />
         <link rel='apple-touch-icon' href='/icons/icon-192x192.png' />
         {/* 将配置序列化后直接写入脚本，浏览器端可通过 window.RUNTIME_CONFIG 获取 */}
         {/* eslint-disable-next-line @next/next/no-sync-scripts */}
@@ -128,17 +158,39 @@ export default async function RootLayout({
           enableSystem
           disableTransitionOnChange
         >
-          <DownloadProvider>
-            <WatchRoomProvider>
-              <SiteProvider siteName={siteName} announcement={announcement}>
-                <SessionTracker />
-                {children}
-                <GlobalErrorIndicator />
-              </SiteProvider>
-              <DownloadPanel />
-              <ChatFloatingWindow />
-            </WatchRoomProvider>
-          </DownloadProvider>
+          <QueryProvider>
+            <GlobalCacheProvider>
+              <DownloadProvider>
+                <WatchRoomProvider>
+                  <SiteProvider siteName={siteName} announcement={announcement}>
+                    <ChunkErrorGuard />
+                    <SessionTracker />
+                    <RouteWarmup />
+                    {/* 导航栏在 layout 层，自动持久化 */}
+                    <NavigationShell />
+                    {/* 主内容区域 - 只有这部分会在路由切换时重新渲染 */}
+                    <main className='w-full min-h-screen pt-[44px] md:pt-16 pb-16 md:pb-8'>
+                      <div className='w-full max-w-[2560px] mx-auto px-4 sm:px-6 md:px-8 lg:px-12 xl:px-16 2xl:px-20'>
+                        <Suspense fallback={
+                          <div className="fixed inset-0 z-50">
+                            <CinematicLoadingFallback />
+                          </div>
+                        }>
+                          {children}
+                        </Suspense>
+                      </div>
+                    </main>
+                    <GlobalErrorIndicator />
+                  </SiteProvider>
+                  <Suspense fallback={null}>
+                    <DownloadPanel />
+                    <ChatFloatingWindow />
+                  </Suspense>
+                </WatchRoomProvider>
+              </DownloadProvider>
+            </GlobalCacheProvider>
+          </QueryProvider>
+          <Toaster position="top-center" richColors closeButton />
         </ThemeProvider>
       </body>
     </html>

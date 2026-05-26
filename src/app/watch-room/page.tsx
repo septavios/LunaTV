@@ -2,20 +2,20 @@
 'use client';
 
 import { useState, useEffect } from 'react';
-import { Users, UserPlus, List as ListIcon, Lock, RefreshCw, Video, LogOut, Play } from 'lucide-react';
+import { Users, UserPlus, List as ListIcon, Lock, RefreshCw, Video, LogOut, Play, Radio, Monitor } from 'lucide-react';
 import { useRouter } from 'next/navigation';
 import { useWatchRoomContext } from '@/components/WatchRoomProvider';
 import PageLayout from '@/components/PageLayout';
 import { getAuthInfoFromBrowserCookie } from '@/lib/auth';
 import MiniVideoCard from '@/components/watch-room/MiniVideoCard';
-import type { Room, PlayState } from '@/types/watch-room.types';
+import type { Room, PlayState, LiveState, ScreenState, RoomType } from '@/types/watch-room.types';
 
 type TabType = 'create' | 'join' | 'list';
 
 export default function WatchRoomPage() {
   const router = useRouter();
   const watchRoom = useWatchRoomContext();
-  const { getRoomList, isConnected, createRoom, joinRoom, leaveRoom, currentRoom, isOwner, members, configLoading } = watchRoom;
+  const { getRoomList, isConnected, createRoom, joinRoom, leaveRoom, currentRoom, isOwner, members, configLoading, hasOwnerToken, dismissRoomFromList } = watchRoom;
   const [activeTab, setActiveTab] = useState<TabType>('create');
 
   // 获取当前登录用户
@@ -32,6 +32,7 @@ export default function WatchRoomPage() {
     description: '',
     password: '',
     isPublic: true,
+    roomType: 'sync' as RoomType,
   });
 
   // 加入房间表单
@@ -65,11 +66,18 @@ export default function WatchRoomPage() {
   useEffect(() => {
     if (activeTab === 'list') {
       loadRooms();
-      // 每5秒刷新一次
-      const interval = setInterval(loadRooms, 5000);
+      // 每1小时刷新一次
+      const interval = setInterval(loadRooms, 60 * 60 * 1000);
       return () => clearInterval(interval);
     }
   }, [activeTab, isConnected]);
+
+  // 如果是屏幕共享房间，自动跳转到专门页面
+  useEffect(() => {
+    if (currentRoom?.roomType === 'screen') {
+      router.push('/watch-room/screen');
+    }
+  }, [currentRoom, router]);
 
   // 处理创建房间
   const handleCreateRoom = async (e: React.FormEvent) => {
@@ -86,6 +94,7 @@ export default function WatchRoomPage() {
         description: createForm.description.trim(),
         password: createForm.password.trim() || undefined,
         isPublic: createForm.isPublic,
+        roomType: createForm.roomType,
       });
 
       // 清空表单
@@ -94,6 +103,7 @@ export default function WatchRoomPage() {
         description: '',
         password: '',
         isPublic: true,
+        roomType: 'sync',
       });
     } catch (error: any) {
       alert(error.message || '创建房间失败');
@@ -143,6 +153,26 @@ export default function WatchRoomPage() {
   const handleLeaveRoom = () => {
     if (confirm(isOwner ? '确定要解散房间吗？所有成员将被踢出房间。' : '确定要退出房间吗？')) {
       leaveRoom();
+    }
+  };
+
+  // 从房间列表解散房间
+  const handleDismissRoom = async (roomId: string, roomName: string) => {
+    if (!confirm(`确定要解散房间"${roomName}"吗？所有成员将被踢出房间。`)) {
+      return;
+    }
+
+    try {
+      const result = await dismissRoomFromList(roomId);
+      if (result.success) {
+        // 刷新房间列表
+        await loadRooms();
+      } else {
+        alert(result.error || '解散房间失败');
+      }
+    } catch (error) {
+      console.error('[WatchRoom] Failed to dismiss room:', error);
+      alert('解散房间失败');
     }
   };
 
@@ -343,6 +373,63 @@ export default function WatchRoomPage() {
                       </div>
                     )}
 
+                    {/* 正在观看的直播 */}
+                    {currentRoom.currentState && currentRoom.currentState.type === 'live' && (
+                      <div className="bg-gray-50 dark:bg-gray-900/50 rounded-lg p-4">
+                        <div className="flex items-center gap-2 mb-3">
+                          <Radio className="w-4 h-4 text-red-500" />
+                          <h4 className="font-semibold text-gray-900 dark:text-gray-100">正在观看直播</h4>
+                        </div>
+                        <div
+                          className="bg-white dark:bg-gray-800 rounded-lg p-4 cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors"
+                          onClick={() => {
+                            const state = currentRoom.currentState as LiveState;
+                            router.push(`/live?id=${state.channelId}&source=${state.channelUrl}`);
+                          }}
+                        >
+                          <div className="flex items-center gap-3">
+                            <div className="w-12 h-12 bg-red-100 dark:bg-red-900/30 rounded-lg flex items-center justify-center">
+                              <Radio className="w-6 h-6 text-red-500" />
+                            </div>
+                            <div>
+                              <h5 className="font-medium text-gray-900 dark:text-gray-100">
+                                {(currentRoom.currentState as LiveState).channelName}
+                              </h5>
+                              <p className="text-sm text-gray-500 dark:text-gray-400">
+                                点击加入观看
+                              </p>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* 屏幕共享状态 */}
+                    {currentRoom.currentState && currentRoom.currentState.type === 'screen' && (
+                      <div className="bg-gray-50 dark:bg-gray-900/50 rounded-lg p-4">
+                        <div className="flex items-center gap-2 mb-3">
+                          <Monitor className="w-4 h-4 text-blue-500" />
+                          <h4 className="font-semibold text-gray-900 dark:text-gray-100">屏幕共享中</h4>
+                        </div>
+                        <div className="bg-white dark:bg-gray-800 rounded-lg p-4">
+                          <div className="flex items-center gap-3">
+                            <div className="w-12 h-12 bg-blue-100 dark:bg-blue-900/30 rounded-lg flex items-center justify-center">
+                              <Monitor className="w-6 h-6 text-blue-500" />
+                            </div>
+                            <div className="flex-1">
+                              <h5 className="font-medium text-gray-900 dark:text-gray-100">
+                                {(currentRoom.currentState as ScreenState).ownerName} 的屏幕
+                              </h5>
+                              <p className="text-sm text-gray-500 dark:text-gray-400">
+                                {(currentRoom.currentState as ScreenState).status === 'sharing' ? '正在共享' : '空闲'}
+                                {(currentRoom.currentState as ScreenState).hasAudio && ' • 包含音频'}
+                              </p>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    )}
+
                     {/* 成员列表 */}
                     <div className="bg-gray-50 dark:bg-gray-900/50 rounded-lg p-4">
                       <h4 className="font-semibold text-gray-900 dark:text-gray-100 mb-3">房间成员</h4>
@@ -373,9 +460,9 @@ export default function WatchRoomPage() {
                     {/* 提示信息 */}
                     <div className="bg-indigo-50 dark:bg-indigo-900/20 rounded-lg p-4 border border-indigo-200 dark:border-indigo-800">
                       <p className="text-sm text-indigo-800 dark:text-indigo-200">
-                        💡 {currentRoom.currentState && currentRoom.currentState.type === 'play'
-                          ? '点击上方视频卡片可跳转到播放页面继续观看'
-                          : '前往播放页面开始观影，房间成员将自动同步您的操作'}
+                        💡 {currentRoom.currentState && (currentRoom.currentState.type === 'play' || currentRoom.currentState.type === 'live')
+                          ? '点击上方卡片可跳转到播放页面继续观看'
+                          : '前往播放页面或直播页面开始观影，房间成员将自动同步您的操作'}
                       </p>
                     </div>
 
@@ -394,6 +481,41 @@ export default function WatchRoomPage() {
                   <div className="bg-indigo-50 dark:bg-indigo-900/20 rounded-lg p-3 border border-indigo-200 dark:border-indigo-800">
                     <p className="text-sm text-indigo-800 dark:text-indigo-200">
                       <strong>当前用户：</strong>{currentUsername}
+                    </p>
+                  </div>
+
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+                      房间类型 <span className="text-red-500">*</span>
+                    </label>
+                    <div className="grid grid-cols-2 gap-3">
+                      <button
+                        type="button"
+                        onClick={() => setCreateForm({ ...createForm, roomType: 'sync' })}
+                        className={`flex items-center justify-center gap-2 px-4 py-3 rounded-lg border-2 transition-all ${
+                          createForm.roomType === 'sync'
+                            ? 'border-indigo-500 bg-indigo-50 dark:bg-indigo-900/20 text-indigo-700 dark:text-indigo-300'
+                            : 'border-gray-300 dark:border-gray-600 hover:border-gray-400 dark:hover:border-gray-500'
+                        }`}
+                      >
+                        <Video className="w-5 h-5" />
+                        <span className="font-medium">视频同步</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setCreateForm({ ...createForm, roomType: 'screen' })}
+                        className={`flex items-center justify-center gap-2 px-4 py-3 rounded-lg border-2 transition-all ${
+                          createForm.roomType === 'screen'
+                            ? 'border-indigo-500 bg-indigo-50 dark:bg-indigo-900/20 text-indigo-700 dark:text-indigo-300'
+                            : 'border-gray-300 dark:border-gray-600 hover:border-gray-400 dark:hover:border-gray-500'
+                        }`}
+                      >
+                        <Monitor className="w-5 h-5" />
+                        <span className="font-medium">屏幕共享</span>
+                      </button>
+                    </div>
+                    <p className="text-xs text-gray-500 dark:text-gray-400 mt-2">
+                      {createForm.roomType === 'sync' ? '同步观看在线视频和直播' : '共享您的屏幕给房间成员'}
                     </p>
                   </div>
 
@@ -546,6 +668,63 @@ export default function WatchRoomPage() {
                       </div>
                     )}
 
+                    {/* 正在观看的直播 */}
+                    {currentRoom.currentState && currentRoom.currentState.type === 'live' && (
+                      <div className="bg-gray-50 dark:bg-gray-900/50 rounded-lg p-4">
+                        <div className="flex items-center gap-2 mb-3">
+                          <Radio className="w-4 h-4 text-red-500" />
+                          <h4 className="font-semibold text-gray-900 dark:text-gray-100">正在观看直播</h4>
+                        </div>
+                        <div
+                          className="bg-white dark:bg-gray-800 rounded-lg p-4 cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors"
+                          onClick={() => {
+                            const state = currentRoom.currentState as LiveState;
+                            router.push(`/live?id=${state.channelId}&source=${state.channelUrl}`);
+                          }}
+                        >
+                          <div className="flex items-center gap-3">
+                            <div className="w-12 h-12 bg-red-100 dark:bg-red-900/30 rounded-lg flex items-center justify-center">
+                              <Radio className="w-6 h-6 text-red-500" />
+                            </div>
+                            <div>
+                              <h5 className="font-medium text-gray-900 dark:text-gray-100">
+                                {(currentRoom.currentState as LiveState).channelName}
+                              </h5>
+                              <p className="text-sm text-gray-500 dark:text-gray-400">
+                                点击加入观看
+                              </p>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* 屏幕共享状态 */}
+                    {currentRoom.currentState && currentRoom.currentState.type === 'screen' && (
+                      <div className="bg-gray-50 dark:bg-gray-900/50 rounded-lg p-4">
+                        <div className="flex items-center gap-2 mb-3">
+                          <Monitor className="w-4 h-4 text-blue-500" />
+                          <h4 className="font-semibold text-gray-900 dark:text-gray-100">屏幕共享中</h4>
+                        </div>
+                        <div className="bg-white dark:bg-gray-800 rounded-lg p-4">
+                          <div className="flex items-center gap-3">
+                            <div className="w-12 h-12 bg-blue-100 dark:bg-blue-900/30 rounded-lg flex items-center justify-center">
+                              <Monitor className="w-6 h-6 text-blue-500" />
+                            </div>
+                            <div className="flex-1">
+                              <h5 className="font-medium text-gray-900 dark:text-gray-100">
+                                {(currentRoom.currentState as ScreenState).ownerName} 的屏幕
+                              </h5>
+                              <p className="text-sm text-gray-500 dark:text-gray-400">
+                                {(currentRoom.currentState as ScreenState).status === 'sharing' ? '正在共享' : '空闲'}
+                                {(currentRoom.currentState as ScreenState).hasAudio && ' • 包含音频'}
+                              </p>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    )}
+
                     {/* 成员列表 */}
                     <div className="bg-gray-50 dark:bg-gray-900/50 rounded-lg p-4">
                       <h4 className="font-semibold text-gray-900 dark:text-gray-100 mb-3">房间成员</h4>
@@ -576,10 +755,10 @@ export default function WatchRoomPage() {
                     {/* 提示信息 */}
                     <div className="bg-green-50 dark:bg-green-900/20 rounded-lg p-4 border border-green-200 dark:border-green-800">
                       <p className="text-sm text-green-800 dark:text-green-200">
-                        💡 {currentRoom.currentState && currentRoom.currentState.type === 'play'
-                          ? '点击上方视频卡片可跳转到播放页面继续观看'
+                        💡 {currentRoom.currentState && (currentRoom.currentState.type === 'play' || currentRoom.currentState.type === 'live')
+                          ? '点击上方卡片可跳转到播放页面继续观看'
                           : isOwner
-                            ? '前往播放页面开始观影，房间成员将自动同步您的操作'
+                            ? '前往播放页面或直播页面开始观影，房间成员将自动同步您的操作'
                             : '等待房主开始播放，您的播放进度将自动跟随房主'}
                       </p>
                     </div>
@@ -704,9 +883,17 @@ export default function WatchRoomPage() {
                     >
                       <div className="flex items-start justify-between mb-2.5">
                         <div className="flex-1 min-w-0">
-                          <h3 className="text-sm sm:text-base font-bold text-gray-900 dark:text-gray-100 truncate">
-                            {room.name}
-                          </h3>
+                          <div className="flex items-center gap-2 mb-1">
+                            <h3 className="text-sm sm:text-base font-bold text-gray-900 dark:text-gray-100 truncate">
+                              {room.name}
+                            </h3>
+                            {room.roomType === 'screen' && (
+                              <span className="shrink-0 inline-flex items-center gap-1 px-2 py-0.5 bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-400 text-xs rounded">
+                                <Monitor className="w-3 h-3" />
+                                屏幕共享
+                              </span>
+                            )}
+                          </div>
                           {room.description && (
                             <p className="text-xs text-gray-600 dark:text-gray-400 line-clamp-1 mt-0.5">
                               {room.description}
@@ -774,12 +961,53 @@ export default function WatchRoomPage() {
                         );
                       })()}
 
-                      <button
-                        onClick={() => handleJoinFromList(room)}
-                        className="w-full bg-purple-500 hover:bg-purple-600 text-white font-medium py-2.5 rounded-lg transition-colors"
-                      >
-                        加入房间
-                      </button>
+                      {/* 正在观看的直播 - 小型卡片 */}
+                      {room.currentState && room.currentState.type === 'live' && (() => {
+                        const liveState = room.currentState as LiveState;
+                        return (
+                          <div className="mb-3">
+                            <div className="flex items-center gap-2 mb-2">
+                              <Radio className="w-4 h-4 text-red-500" />
+                              <span className="text-sm font-medium text-red-600 dark:text-red-400">正在观看直播</span>
+                            </div>
+                            <div
+                              className="bg-gray-50 dark:bg-gray-700 rounded-lg p-3 cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-600 transition-colors"
+                              onClick={() => {
+                                router.push(`/live?id=${liveState.channelId}&source=${liveState.channelUrl}`);
+                              }}
+                            >
+                              <div className="flex items-center gap-2">
+                                <Radio className="w-5 h-5 text-red-500" />
+                                <span className="font-medium text-gray-900 dark:text-gray-100 text-sm">
+                                  {liveState.channelName}
+                                </span>
+                              </div>
+                            </div>
+                          </div>
+                        );
+                      })()}
+
+                      {/* 按钮区域 */}
+                      <div className="space-y-2">
+                        {/* 如果有 ownerToken，显示解散房间按钮 */}
+                        {hasOwnerToken(room.id) && (
+                          <button
+                            onClick={() => handleDismissRoom(room.id, room.name)}
+                            className="w-full bg-red-500 hover:bg-red-600 text-white font-medium py-2.5 rounded-lg transition-colors flex items-center justify-center gap-2"
+                          >
+                            <LogOut className="w-4 h-4" />
+                            解散房间
+                          </button>
+                        )}
+
+                        {/* 加入房间按钮 */}
+                        <button
+                          onClick={() => handleJoinFromList(room)}
+                          className="w-full bg-purple-500 hover:bg-purple-600 text-white font-medium py-2.5 rounded-lg transition-colors"
+                        >
+                          加入房间
+                        </button>
+                      </div>
                     </div>
                   ))}
                 </div>

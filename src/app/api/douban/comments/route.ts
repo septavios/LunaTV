@@ -1,30 +1,73 @@
 import { NextResponse } from 'next/server';
 
-import { getCacheTime } from '@/lib/config';
+import { getCacheTime, getConfig } from '@/lib/config';
+import { fetchDoubanWithVerification } from '@/lib/douban-anti-crawler';
+// Puppeteer 已禁用以减少包体积（78MB），如需恢复请取消注释并安装依赖
+// import { bypassDoubanChallenge } from '@/lib/puppeteer';
+import { getRandomUserAgent } from '@/lib/user-agent';
+import { recordRequest } from '@/lib/performance-monitor';
 
-// 用户代理池
-const USER_AGENTS = [
-  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
-  'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
-  'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
-];
+/**
+ * 从配置中获取豆瓣 Cookies
+ */
+async function getDoubanCookies(): Promise<string | null> {
+  try {
+    const config = await getConfig();
+    return config.DoubanConfig?.cookies || null;
+  } catch (error) {
+    console.warn('[Douban Comments] 获取 cookies 配置失败:', error);
+    return null;
+  }
+}
 
 // 请求限制器
 let lastRequestTime = 0;
 const MIN_REQUEST_INTERVAL = 2000; // 2秒最小间隔
-
-function getRandomUserAgent(): string {
-  return USER_AGENTS[Math.floor(Math.random() * USER_AGENTS.length)];
-}
 
 function randomDelay(min = 1000, max = 3000): Promise<void> {
   const delay = Math.floor(Math.random() * (max - min + 1)) + min;
   return new Promise(resolve => setTimeout(resolve, delay));
 }
 
+/**
+ * 检测是否为豆瓣 challenge 页面
+ */
+function isDoubanChallengePage(html: string): boolean {
+  return (
+    html.includes('sha512') &&
+    html.includes('process(cha)') &&
+    html.includes('载入中')
+  );
+}
+
+/**
+ * 尝试使用反爬验证获取页面
+ */
+async function tryFetchWithAntiCrawler(url: string): Promise<{ success: boolean; html?: string; error?: string }> {
+  try {
+    console.log('[Douban Comments] 🔐 尝试使用反爬验证...');
+    const response = await fetchDoubanWithVerification(url);
+
+    if (response.ok) {
+      const html = await response.text();
+      console.log(`[Douban Comments] ✅ 反爬验证成功，页面长度: ${html.length}`);
+      return { success: true, html };
+    }
+
+    console.log(`[Douban Comments] ⚠️ 反爬验证返回状态: ${response.status}`);
+    return { success: false, error: `Status ${response.status}` };
+  } catch (error) {
+    console.log('[Douban Comments] ❌ 反爬验证失败:', error);
+    return { success: false, error: error instanceof Error ? error.message : 'Unknown error' };
+  }
+}
+
 export const runtime = 'nodejs';
 
 export async function GET(request: Request) {
+  const startTime = Date.now();
+  const startMemory = process.memoryUsage().heapUsed;
+
   const { searchParams } = new URL(request.url);
   const id = searchParams.get('id');
   const start = parseInt(searchParams.get('start') || '0');
@@ -32,6 +75,19 @@ export async function GET(request: Request) {
   const sort = searchParams.get('sort') || 'new_score'; // new_score 或 time
 
   if (!id) {
+    // 记录失败请求
+    recordRequest({
+      timestamp: startTime,
+      method: 'GET',
+      path: '/api/douban/comments',
+      statusCode: 400,
+      duration: Date.now() - startTime,
+      memoryUsed: (process.memoryUsage().heapUsed - startMemory) / 1024 / 1024,
+      dbQueries: 0,
+      requestSize: 0,
+      responseSize: 0,
+    });
+
     return NextResponse.json(
       { error: '缺少必要参数: id' },
       { status: 400 }
@@ -40,6 +96,19 @@ export async function GET(request: Request) {
 
   // 验证参数
   if (limit < 1 || limit > 50) {
+    // 记录失败请求
+    recordRequest({
+      timestamp: startTime,
+      method: 'GET',
+      path: '/api/douban/comments',
+      statusCode: 400,
+      duration: Date.now() - startTime,
+      memoryUsed: (process.memoryUsage().heapUsed - startMemory) / 1024 / 1024,
+      dbQueries: 0,
+      requestSize: 0,
+      responseSize: 0,
+    });
+
     return NextResponse.json(
       { error: 'limit 必须在 1-50 之间' },
       { status: 400 }
@@ -47,6 +116,19 @@ export async function GET(request: Request) {
   }
 
   if (start < 0) {
+    // 记录失败请求
+    recordRequest({
+      timestamp: startTime,
+      method: 'GET',
+      path: '/api/douban/comments',
+      statusCode: 400,
+      duration: Date.now() - startTime,
+      memoryUsed: (process.memoryUsage().heapUsed - startMemory) / 1024 / 1024,
+      dbQueries: 0,
+      requestSize: 0,
+      responseSize: 0,
+    });
+
     return NextResponse.json(
       { error: 'start 不能小于 0' },
       { status: 400 }
@@ -69,6 +151,27 @@ export async function GET(request: Request) {
     // 添加随机延时
     await randomDelay(500, 1500);
 
+    // 🍪 获取豆瓣 Cookies（如果配置了）
+    const doubanCookies = await getDoubanCookies();
+
+    let html: string | null = null;
+
+    // 🔐 优先级 1: 尝试使用反爬验证
+    const antiCrawlerResult = await tryFetchWithAntiCrawler(target);
+    if (antiCrawlerResult.success && antiCrawlerResult.html) {
+      // 检查是否为 challenge 页面
+      if (!isDoubanChallengePage(antiCrawlerResult.html)) {
+        console.log('[Douban Comments] ✅ 反爬验证成功，直接使用返回的页面');
+        html = antiCrawlerResult.html;
+      } else {
+        console.log('[Douban Comments] ⚠️ 反爬验证返回了 challenge 页面，尝试其他方式');
+      }
+    } else {
+      console.log('[Douban Comments] ⚠️ 反爬验证失败，尝试 Cookie 方式');
+    }
+
+    // 🍪 优先级 2: 如果反爬验证失败，使用 Cookie 方式（原有逻辑）
+    if (!html) {
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 15000);
 
@@ -88,8 +191,15 @@ export async function GET(request: Request) {
         'Cache-Control': 'max-age=0',
         // 随机添加Referer
         ...(Math.random() > 0.5 ? { 'Referer': 'https://movie.douban.com/' } : {}),
+        // 🍪 如果配置了 Cookies，则添加到请求头
+        ...(doubanCookies ? { 'Cookie': doubanCookies } : {}),
       },
     };
+
+    // 如果使用了 Cookies，记录日志
+    if (doubanCookies) {
+      console.log(`[Douban Comments] 使用配置的 Cookies 请求: ${id}`);
+    }
 
     const response = await fetch(target, fetchOptions);
     clearTimeout(timeoutId);
@@ -98,13 +208,61 @@ export async function GET(request: Request) {
       throw new Error(`HTTP error! Status: ${response.status}`);
     }
 
-    const html = await response.text();
+    html = await response.text();
+
+    // 检测 challenge 页面 - 根据配置决定是否使用 Puppeteer
+    if (isDoubanChallengePage(html)) {
+      console.log(`[Douban Comments] 检测到 challenge 页面`);
+
+      // 🍪 如果使用了 Cookies 但仍然遇到 challenge，说明 cookies 可能失效
+      if (doubanCookies) {
+        console.warn(`[Douban Comments] ⚠️ 使用 Cookies 仍遇到 Challenge，Cookies 可能已失效`);
+      }
+
+      // 获取配置，检查是否启用 Puppeteer
+      const config = await getConfig();
+      const enablePuppeteer = config.DoubanConfig?.enablePuppeteer ?? false;
+
+      // Puppeteer 已禁用以减少包体积（78MB）
+      // 如需恢复，请取消下方注释并安装 @sparticuz/chromium 和 puppeteer-core
+      /*
+      if (enablePuppeteer) {
+        console.log(`[Douban Comments] Puppeteer 已启用，尝试绕过 Challenge...`);
+        try {
+          // 尝试使用 Puppeteer 绕过 Challenge
+          const puppeteerResult = await bypassDoubanChallenge(target);
+          html = puppeteerResult.html;
+
+          // 再次检测是否成功绕过
+          if (isDoubanChallengePage(html)) {
+            console.log(`[Douban Comments] Puppeteer 绕过失败`);
+            throw new Error('豆瓣反爬虫激活，无法获取短评');
+          }
+
+          console.log(`[Douban Comments] ✅ Puppeteer 成功绕过 Challenge`);
+        } catch (puppeteerError) {
+          console.error(`[Douban Comments] Puppeteer 执行失败:`, puppeteerError);
+          throw new Error('豆瓣反爬虫激活，无法获取短评');
+        }
+      } else {
+      */
+        // Puppeteer 未启用或已禁用，直接返回错误
+        console.log(`[Douban Comments] Puppeteer 未启用，无法绕过 Challenge`);
+        throw new Error('豆瓣反爬虫激活，短评功能暂时不可用');
+      // }
+    }
+
+    // 🍪 如果使用了 Cookies 且成功获取页面，记录成功日志
+    if (doubanCookies) {
+      console.log(`[Douban Comments] ✅ 使用 Cookies 成功获取短评: ${id}`);
+    }
+    } // 结束 if (!html) 块
 
     // 解析短评列表
     const comments = parseDoubanComments(html);
 
     const cacheTime = await getCacheTime();
-    return NextResponse.json({
+    const successResponse = {
       code: 200,
       message: '获取成功',
       data: {
@@ -113,7 +271,23 @@ export async function GET(request: Request) {
         limit,
         count: comments.length
       }
-    }, {
+    };
+    const successResponseSize = Buffer.byteLength(JSON.stringify(successResponse), 'utf8');
+
+    // 记录成功请求
+    recordRequest({
+      timestamp: startTime,
+      method: 'GET',
+      path: '/api/douban/comments',
+      statusCode: 200,
+      duration: Date.now() - startTime,
+      memoryUsed: (process.memoryUsage().heapUsed - startMemory) / 1024 / 1024,
+      dbQueries: 0,
+      requestSize: 0,
+      responseSize: successResponseSize,
+    });
+
+    return NextResponse.json(successResponse, {
       headers: {
         'Cache-Control': `public, max-age=${cacheTime}, s-maxage=${cacheTime}`,
         'CDN-Cache-Control': `public, s-maxage=${cacheTime}`,
@@ -122,10 +296,26 @@ export async function GET(request: Request) {
       },
     });
   } catch (error) {
-    return NextResponse.json(
-      { error: '获取豆瓣短评失败', details: (error as Error).message },
-      { status: 500 }
-    );
+    const errorResponse = {
+      error: '获取豆瓣短评失败',
+      details: (error as Error).message
+    };
+    const errorResponseSize = Buffer.byteLength(JSON.stringify(errorResponse), 'utf8');
+
+    // 记录错误请求
+    recordRequest({
+      timestamp: startTime,
+      method: 'GET',
+      path: '/api/douban/comments',
+      statusCode: 500,
+      duration: Date.now() - startTime,
+      memoryUsed: (process.memoryUsage().heapUsed - startMemory) / 1024 / 1024,
+      dbQueries: 0,
+      requestSize: 0,
+      responseSize: errorResponseSize,
+    });
+
+    return NextResponse.json(errorResponse, { status: 500 });
   }
 }
 
